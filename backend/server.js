@@ -7,11 +7,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Database connection
 const db = process.env.MONGO_URI;
 mongoose.connect(db)
     .then(() => console.log('MongoDB connected'))
     .catch(err => console.log(err));
 
+// Routes
 const users = require('./routes/users');
 const expenses = require('./routes/expenses');
 
