@@ -188,40 +188,40 @@ const ExpensesTab = ({ expenses, onAddExpense, onUpdateExpense, onDeleteExpense,
             Intelligent Capture
           </h3>
           
-          <div className="flex flex-col md:flex-row gap-6">
-            <form onSubmit={handleSmartCategorize} className="flex-1 relative">
+          <div className="flex flex-col md:flex-row gap-6 items-stretch">
+            <form onSubmit={handleSmartCategorize} className="flex-1 relative min-h-[80px]">
               <input
                 type="text"
                 value={smartInput}
                 onChange={(e) => setSmartInput(e.target.value)}
-                placeholder="e.g. 'Uber to the airport for $45' or 'Groceries at Woolworths R1200'"
-                className="w-full rounded-xl pl-4 pr-12 py-4 bg-obsidian-900/80 border border-obsidian-600 text-white placeholder-obsidian-500 focus:outline-none focus:border-gold-500 transition-colors font-medium shadow-inner"
+                placeholder="e.g. 'Uber to the airport for $45'"
+                className="w-full h-full absolute inset-0 rounded-xl pl-5 pr-16 py-4 bg-obsidian-900/80 border border-obsidian-600 text-white placeholder-obsidian-500 focus:outline-none focus:border-gold-500 transition-colors font-medium shadow-inner"
                 disabled={isCategorizing}
               />
               <button 
                 type="submit" 
                 disabled={isCategorizing || !smartInput}
-                className="absolute right-2 top-2 bottom-2 aspect-square rounded-lg bg-gold-gradient flex items-center justify-center text-obsidian-900 hover:opacity-90 disabled:opacity-50 transition-all"
+                className="absolute right-3 top-1/2 -translate-y-1/2 h-12 w-12 rounded-lg bg-gold-gradient flex items-center justify-center text-obsidian-900 hover:opacity-90 disabled:opacity-50 transition-all z-10"
               >
-                {isCategorizing ? <Loader2 size={18} className="animate-spin" /> : <Activity size={18} />}
+                {isCategorizing ? <Loader2 size={20} className="animate-spin" /> : <Activity size={20} />}
               </button>
             </form>
 
             <div className="hidden md:block w-px bg-obsidian-700"></div>
 
             <div 
-              className="flex-1 rounded-xl border border-dashed border-obsidian-600 bg-obsidian-900/50 hover:bg-obsidian-800/80 hover:border-gold-500 transition-all cursor-pointer flex flex-col items-center justify-center p-4 relative"
+              className="flex-1 min-h-[80px] rounded-xl border border-dashed border-obsidian-600 bg-obsidian-900/50 hover:bg-obsidian-800/80 hover:border-gold-500 transition-all cursor-pointer flex flex-col items-center justify-center p-4 relative"
               onClick={() => fileInputRef.current?.click()}
             >
               {isParsingReceipt ? (
                 <div className="flex items-center gap-3 text-gold-500">
                   <Loader2 size={24} className="animate-spin" />
-                  <span className="font-bold text-xs uppercase tracking-widest">Scanning Receipt...</span>
+                  <span className="font-bold text-xs uppercase tracking-widest">Scanning...</span>
                 </div>
               ) : (
                 <>
                   <UploadCloud size={24} className="text-platinum-400 mb-2" />
-                  <span className="font-bold text-[10px] uppercase tracking-widest text-platinum-400">Upload Receipt or Invoice</span>
+                  <span className="font-bold text-[10px] uppercase tracking-widest text-platinum-400 text-center">Upload Receipt or Invoice</span>
                 </>
               )}
               <input 
