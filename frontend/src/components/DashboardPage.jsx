@@ -1,412 +1,309 @@
-import React, { useState, useEffect, useMemo, Suspense, lazy } from 'react';
+import React, { useCallback, useEffect, useMemo, useState, Suspense, lazy } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import {
+  LogOut, ChevronLeft, ChevronRight, Plus, LayoutDashboard, Receipt, PieChart, MoreHorizontal,
+  Wallet, Target, CalendarDays, Sparkles, Settings, Database,
+} from 'lucide-react';
 import { supabase } from '../utils/supabase';
-import { loadUserData, saveUserData } from '../utils/dataStore';
-import { LogOut, Diamond } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import useBudgetData from '../hooks/useBudgetData';
+import { monthSummary } from '../lib/insights';
+import { addMonths, monthLabel, defaultDateForMonth } from '../lib/format';
+import { friendlyError } from '../lib/errors';
+import { useToast } from '../context/ToastContext';
+import ThemeToggle from './ThemeToggle';
+import NotificationsBell from './NotificationsBell';
+import MetricCards from './MetricCards';
+import ExpenseModal from './ExpenseModal';
+import Modal from './ui/Modal';
 
-// Lazy loaded components for Frontend Architecture Optimization
-const MetricCards = lazy(() => import('./MetricCards'));
 const OverviewTab = lazy(() => import('./OverviewTab'));
 const ExpensesTab = lazy(() => import('./ExpensesTab'));
 const IncomeTab = lazy(() => import('./IncomeTab'));
+const BudgetsTab = lazy(() => import('./BudgetsTab'));
+const BillsTab = lazy(() => import('./BillsTab'));
 const GoalsTab = lazy(() => import('./GoalsTab'));
-const SavingTipsTab = lazy(() => import('./SavingTipsTab'));
-const ProfileTab = lazy(() => import('./ProfileTab'));
-const CurrencyConverter = lazy(() => import('./CurrencyConverter'));
-import ThemeToggle from './ThemeToggle';
+const AdvisorTab = lazy(() => import('./SavingTipsTab'));
+const SettingsTab = lazy(() => import('./SettingsTab'));
+const ImportStatementModal = lazy(() => import('./ImportStatementModal'));
+const OnboardingWizard = lazy(() => import('./OnboardingWizard'));
 
-const DashboardPage = ({ onNavigate, onLogout, selectedCurrency, setSelectedCurrency, CURRENCIES, theme, toggleTheme }) => {
-  const [currentUser, setCurrentUser] = useState(null);
-  const [activeTab, setActiveTab] = useState('dashboard');
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
+const TABS = [
+  { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  { id: 'expenses', label: 'Spending', icon: Receipt },
+  { id: 'income', label: 'Income', icon: Wallet },
+  { id: 'budgets', label: 'Budgets', icon: PieChart },
+  { id: 'bills', label: 'Bills', icon: CalendarDays },
+  { id: 'goals', label: 'Goals', icon: Target },
+  { id: 'advisor', label: 'Advisor', icon: Sparkles },
+  { id: 'settings', label: 'Settings', icon: Settings },
+];
+const MOBILE_PRIMARY = ['overview', 'expenses', 'budgets'];
 
-  // Core Data State
-  const [expenses, setExpenses] = useState([]);
-  const [income, setIncome] = useState([]);
-  const [categoryBudgets, setCategoryBudgets] = useState({});
-  const [goals, setGoals] = useState([]);
+const DashboardPage = ({ user: initialUser, theme, toggleTheme }) => {
+  const { toast } = useToast();
+  const [user, setUser] = useState(initialUser);
+  const [currency, setCurrency] = useState(initialUser?.user_metadata?.currency || 'USD');
+  const [activeTab, setActiveTab] = useState('overview');
+  const [settingsFocus, setSettingsFocus] = useState(null);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [expenseModal, setExpenseModal] = useState({ open: false });
+  const [importOpen, setImportOpen] = useState(false);
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [installPrompt, setInstallPrompt] = useState(null);
 
-  // Time Selection
-  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth());
-  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
-  const months = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-  const years = Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i);
+  const now = new Date();
+  const [ym, setYm] = useState({ year: now.getFullYear(), month: now.getMonth() });
+  const { year, month } = ym;
 
+  const data = useBudgetData(user);
+  const summary = useMemo(() => monthSummary(data, year, month), [data, year, month]);
+  const totalBudget = data.expenseCategories.reduce((s, c) => s + (Number(c.budget) || 0), 0);
+
+  // Keep user metadata (name, currency, onboarded) fresh after updates
   useEffect(() => {
-    const initDashboard = async () => {
-      setLoading(true);
-      const { data: { session } } = await supabase.auth.getSession();
-      const user = session?.user;
-      
-      if (!user) {
-        onLogout();
-        return;
-      }
-      setCurrentUser(user);
-
-      if (user.user_metadata?.currency) {
-        setSelectedCurrency(user.user_metadata.currency);
-      }
-
-      // Load Scoped Local Data
-      const loadedIncome = await loadUserData(user.id, 'income', []);
-      const loadedBudgets = await loadUserData(user.id, 'categoryBudgets', {});
-      const loadedGoals = await loadUserData(user.id, 'goals', []);
-      
-      setIncome(loadedIncome);
-      setCategoryBudgets(loadedBudgets);
-      setGoals(loadedGoals);
-
-      // Load Expenses from Supabase
-      await fetchExpenses(user.id);
-    };
-
-    initDashboard();
+    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'USER_UPDATED' && session?.user) setUser(session.user);
+    });
+    return () => sub.subscription.unsubscribe();
   }, []);
 
-  // Set up Real-Time Subscriptions when currentUser is available
+  // First-run setup for brand-new accounts
   useEffect(() => {
-    if (!currentUser) return;
+    if (data.loading || data.needsMigration) return;
+    const fresh = !user?.user_metadata?.onboarded && data.expenses.length === 0 && data.income.length === 0;
+    if (fresh && data.expenseCategories.length) setSetupOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data.loading, data.needsMigration]);
 
-    const channel = supabase
-      .channel('public:expenses')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses', filter: `user_id=eq.${currentUser.id}` }, payload => {
-        // Automatically refetch on remote change to ensure UI syncs across devices
-        fetchExpenses(currentUser.id);
-      })
-      .subscribe();
+  // "Install app" support (Android/desktop Chrome, Edge)
+  useEffect(() => {
+    const onPrompt = (e) => { e.preventDefault(); setInstallPrompt(e); };
+    window.addEventListener('beforeinstallprompt', onPrompt);
+    return () => window.removeEventListener('beforeinstallprompt', onPrompt);
+  }, []);
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [currentUser, selectedMonth, selectedYear]);
-
-  const fetchExpenses = async (userId) => {
-    try {
-      const { data, error: sbError } = await supabase
-        .from('expenses')
-        .select('*')
-        .eq('user_id', userId)
-        .order('created_at', { ascending: false });
-
-      if (sbError) throw new Error(sbError.message);
-      
-      setExpenses(data);
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
+  const install = async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    await installPrompt.userChoice.catch(() => null);
+    setInstallPrompt(null);
   };
 
-  // Filter expenses by date using useMemo (Optimization)
-  const filteredExpenses = useMemo(() => {
-    return expenses.filter(e => {
-      const d = new Date(e.created_at || Date.now());
-      const matchesMonth = d.getMonth() === selectedMonth && d.getFullYear() === selectedYear;
-      const isRecurringCarryOver = e.isRecurring && (
-        d.getFullYear() < selectedYear ||
-        (d.getFullYear() === selectedYear && d.getMonth() <= selectedMonth)
-      );
-      return matchesMonth || isRecurringCarryOver;
-    });
-  }, [expenses, selectedMonth, selectedYear]);
+  const changeCurrency = useCallback(async (next) => {
+    const { error } = await supabase.auth.updateUser({ data: { currency: next } });
+    if (error) { toast({ tone: 'error', message: friendlyError(error) }); return false; }
+    setCurrency(next);
+    return true;
+  }, [toast]);
 
-  // Handlers for Data Mutations (Optimistic Updates for adding)
-  const handleAddExpense = async (newExpense) => {
-    // Optimistic UI Update
-    const optimisticExpense = { ...newExpense, id: Date.now(), user_id: currentUser.id, created_at: new Date().toISOString() };
-    setExpenses(prev => [optimisticExpense, ...prev]);
-
-    try {
-      const { error: sbError } = await supabase.from('expenses').insert([optimisticExpense]);
-      if (sbError) throw new Error(sbError.message);
-      // Real-time subscription will trigger a fetch to reconcile, or we can leave it.
-    } catch (err) { 
-      setError(err.message);
-      // Revert optimistic update on failure
-      setExpenses(prev => prev.filter(e => e.id !== optimisticExpense.id));
-    }
+  const goTab = (id, focus = null) => {
+    setActiveTab(id);
+    setSettingsFocus(focus);
+    setMoreOpen(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const handleUpdateExpense = async (updatedExpense) => {
-    // Optimistic Update
-    setExpenses(prev => prev.map(e => (e.id === updatedExpense.id || e._id === updatedExpense.id) ? { ...e, ...updatedExpense } : e));
-    try {
-      const { error: sbError } = await supabase.from('expenses')
-        .update({ name: updatedExpense.name, amount: updatedExpense.amount, category: updatedExpense.category, isRecurring: updatedExpense.isRecurring })
-        .eq('id', updatedExpense.id);
-      if (sbError) throw new Error(sbError.message);
-    } catch (err) { setError(err.message); fetchExpenses(currentUser.id); }
+  const shiftMonth = (delta) => setYm((cur) => addMonths(cur.year, cur.month, delta));
+  const isCurrentMonth = year === now.getFullYear() && month === now.getMonth();
+
+  const openAddExpense = (opts = {}) =>
+    setExpenseModal({ open: true, expense: null, mode: opts.mode || 'describe', defaults: { occurred_on: defaultDateForMonth(year, month), ...opts.defaults } });
+  const openEditExpense = (expense) => setExpenseModal({ open: true, expense });
+
+  const signOut = async () => {
+    await supabase.auth.signOut();
   };
 
-  const handleDeleteExpense = async (id) => {
-    // Optimistic Delete
-    setExpenses(prev => prev.filter(e => e.id !== id && e._id !== id));
-    try {
-      const { error: sbError } = await supabase.from('expenses').delete().eq('id', id);
-      if (sbError) throw new Error(sbError.message);
-    } catch (err) { setError(err.message); fetchExpenses(currentUser.id); }
-  };
+  const name = user?.user_metadata?.username || user?.email?.split('@')[0] || 'there';
 
-  const handleSetBudget = (category, amount) => {
-    const newBudgets = { ...categoryBudgets, [category]: amount };
-    setCategoryBudgets(newBudgets);
-    saveUserData(currentUser.id, 'categoryBudgets', newBudgets);
-  };
-
-  const handleAddIncome = (newIncome) => {
-    const newIncomeList = [...income, newIncome];
-    setIncome(newIncomeList);
-    saveUserData(currentUser.id, 'income', newIncomeList);
-  };
-
-  const handleRemoveIncome = (index) => {
-    const newIncomeList = income.filter((_, i) => i !== index);
-    setIncome(newIncomeList);
-    saveUserData(currentUser.id, 'income', newIncomeList);
-  };
-
-  const handleAddGoal = (newGoal) => {
-    const newGoals = [...goals, newGoal];
-    setGoals(newGoals);
-    saveUserData(currentUser.id, 'goals', newGoals);
-  };
-
-  const handleRemoveGoal = (goalId) => {
-    const newGoals = goals.filter(goal => goal.id !== goalId);
-    setGoals(newGoals);
-    saveUserData(currentUser.id, 'goals', newGoals);
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    onLogout();
-    onNavigate('login');
-  };
-
-  // Calculations using useMemo for performance
-  const filteredIncome = useMemo(() => income.filter(inc => {
-    const d = new Date(inc.date);
-    return d.getMonth() === selectedMonth && d.getFullYear() === selectedYear;
-  }), [income, selectedMonth, selectedYear]);
-
-  const totalExpenses = useMemo(() => filteredExpenses.reduce((sum, exp) => sum + exp.amount, 0), [filteredExpenses]);
-  const totalIncome = useMemo(() => filteredIncome.reduce((sum, inc) => sum + inc.amount, 0), [filteredIncome]);
-  const netSavings = totalIncome - totalExpenses;
-  
-  const remainingBudget = useMemo(() => {
-    const totalBudgetedAmount = Object.values(categoryBudgets).reduce((sum, amount) => sum + amount, 0);
-    const budgetedExpenses = filteredExpenses.filter(e => categoryBudgets[e.category] > 0).reduce((sum, e) => sum + e.amount, 0);
-    return totalBudgetedAmount - budgetedExpenses;
-  }, [categoryBudgets, filteredExpenses]);
-
-  // Framer Motion Variants
-  const tabVariants = {
-    hidden: { opacity: 0, y: 10, scale: 0.98 },
-    visible: { opacity: 1, y: 0, scale: 1, transition: { duration: 0.4, ease: 'easeOut' } },
-    exit: { opacity: 0, y: -10, scale: 0.98, transition: { duration: 0.2 } }
-  };
-
-  if (loading) return <div className="min-h-screen flex items-center justify-center text-xl text-gold-500 font-serif animate-pulse">Loading Your Portfolio...</div>;
+  const tabProps = { data, year, month, currency };
 
   return (
-    <div className="min-h-screen font-sans bg-[url('https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=2564&auto=format&fit=crop')] bg-cover bg-fixed bg-center">
-      <div className="min-h-screen bg-obsidian-900/90 backdrop-blur-md">
-        
-        {/* HEADER NAV */}
-        <nav className="border-b border-obsidian-700/50 sticky top-0 z-50 shadow-2xl bg-obsidian-900/60 backdrop-blur-xl">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between">
-            <div className="flex items-center gap-3 cursor-pointer group" onClick={() => setActiveTab('dashboard')}>
-              <div className="w-10 h-10 bg-gold-gradient rounded-xl flex items-center justify-center shadow-[0_0_20px_rgba(212,175,55,0.2)] group-hover:shadow-[0_0_30px_rgba(212,175,55,0.4)] transition-all">
-                <span className="font-serif text-2xl font-bold text-obsidian-900">B</span>
-              </div>
-              <span className="text-2xl font-serif text-white tracking-wider">BudgetEase</span>
-            </div>
+    <div className="min-h-screen font-sans bg-obsidian-900 pb-24 md:pb-10">
+      {/* HEADER */}
+      <header className="sticky top-0 z-50 border-b border-obsidian-700/60 bg-obsidian-900/80 backdrop-blur-xl">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
+          <button className="flex items-center gap-2.5" onClick={() => goTab('overview')} aria-label="BudgetEase home">
+            <span className="w-9 h-9 bg-gold-gradient rounded-xl flex items-center justify-center font-serif text-xl font-bold text-[#0a0a0a]">B</span>
+            <span className="text-xl font-serif text-white hidden sm:inline">BudgetEase</span>
+          </button>
+          <div className="flex items-center gap-2 sm:gap-3">
+            <NotificationsBell data={data} currency={currency} onNavigate={goTab} />
+            <ThemeToggle theme={theme} toggleTheme={toggleTheme} />
+            <button onClick={signOut} className="flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-medium text-platinum-400 hover:text-gold-400 hover:bg-obsidian-800" aria-label="Sign out">
+              <LogOut size={18} /><span className="hidden sm:inline">Sign out</span>
+            </button>
+          </div>
+        </div>
 
-            <div className="flex items-center gap-4 sm:gap-6">
-              <ThemeToggle theme={theme} toggleTheme={toggleTheme} />
-              <div className="hidden sm:flex items-center gap-2 rounded-xl p-1 bg-obsidian-800/50 border border-obsidian-700">
-                <Diamond size={14} className="text-gold-500 ml-2" />
-                <select
-                  value={selectedCurrency}
-                  onChange={(e) => setSelectedCurrency(e.target.value)}
-                  className="bg-transparent text-sm font-bold focus:outline-none pr-2 appearance-none cursor-pointer text-platinum-300 hover:text-gold-400 transition-colors"
+        {/* Desktop tabs */}
+        <nav className="hidden md:block max-w-7xl mx-auto px-4 sm:px-6 lg:px-8" aria-label="Main">
+          <ul className="flex gap-1 -mb-px">
+            {TABS.map((t) => (
+              <li key={t.id}>
+                <button
+                  onClick={() => goTab(t.id)}
+                  aria-current={activeTab === t.id ? 'page' : undefined}
+                  className={`relative flex items-center gap-2 px-3 lg:px-4 py-3 text-sm font-medium transition-colors ${activeTab === t.id ? 'text-gold-500' : 'text-platinum-400 hover:text-platinum-100'}`}
                 >
-                  {CURRENCIES.map(code => <option key={code} value={code} className="bg-obsidian-900 text-platinum-200">{code}</option>)}
-                </select>
-              </div>
-
-              <button
-                onClick={handleLogout}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition-all text-platinum-400 hover:text-gold-400 hover:bg-obsidian-800"
-              >
-                <LogOut size={18} />
-                <span className="hidden sm:inline">Sign Out</span>
-              </button>
-            </div>
-          </div>
-        </nav>
-
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10 relative">
-          
-          <div className="absolute top-0 left-1/4 w-96 h-96 bg-gold-500/5 rounded-full blur-[100px] pointer-events-none"></div>
-          
-          {/* WELCOME HEADER */}
-          <div className="mb-10 flex flex-col md:flex-row justify-between items-start md:items-end gap-6 relative z-10">
-            <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.6 }}>
-              <p className="text-gold-500 font-bold tracking-widest uppercase text-xs mb-2">Private Wealth Overview</p>
-              <h1 className="text-4xl sm:text-5xl font-serif mb-2 tracking-wide text-white">
-                Welcome back, <span className="text-gold-gradient">{currentUser?.user_metadata?.username || 'Client'}</span>.
-              </h1>
-              <p className="font-medium text-platinum-400">Here is the current state of your financial portfolio.</p>
-            </motion.div>
-            
-            <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ duration: 0.6 }} className="flex gap-3 w-full md:w-auto shadow-[0_0_30px_rgba(0,0,0,0.5)] rounded-2xl bg-obsidian-800/80 border border-obsidian-700/50 p-1 backdrop-blur-md">
-              <select
-                value={selectedMonth}
-                onChange={(e) => setSelectedMonth(parseInt(e.target.value))}
-                className="flex-1 md:w-36 px-4 py-2.5 font-bold rounded-xl bg-transparent text-platinum-200 focus:outline-none appearance-none cursor-pointer hover:text-gold-400 transition-colors"
-              >
-                {months.map((m, i) => <option key={m} value={i} className="bg-obsidian-900">{m}</option>)}
-              </select>
-              <div className="w-px bg-obsidian-700 my-2"></div>
-              <select
-                value={selectedYear}
-                onChange={(e) => setSelectedYear(parseInt(e.target.value))}
-                className="flex-1 md:w-28 px-4 py-2.5 font-bold rounded-xl bg-transparent text-platinum-200 focus:outline-none appearance-none cursor-pointer hover:text-gold-400 transition-colors"
-              >
-                {years.map(y => <option key={y} value={y} className="bg-obsidian-900">{y}</option>)}
-              </select>
-            </motion.div>
-          </div>
-
-          {error && (
-            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mb-8 p-4 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl font-medium shadow-lg backdrop-blur-sm">
-              Error: {error}
-            </motion.div>
-          )}
-
-          {/* METRICS GRID */}
-          <div className="relative z-10">
-            <Suspense fallback={<div className="h-32 animate-pulse bg-obsidian-800/50 rounded-2xl mb-10"></div>}>
-              <MetricCards 
-                totalIncome={totalIncome}
-                totalExpenses={totalExpenses}
-                netSavings={netSavings}
-                remainingBudget={remainingBudget}
-                selectedCurrency={selectedCurrency}
-              />
-            </Suspense>
-          </div>
-
-          {/* TABS NAVIGATION */}
-          <div className="flex space-x-6 md:space-x-10 border-b border-obsidian-700/50 mb-10 overflow-x-auto scrollbar-hide relative z-10">
-            {['dashboard', 'expenses', 'income', 'goals', 'tips', 'currency', 'profile'].map(tab => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`pb-4 text-[11px] sm:text-xs font-bold uppercase tracking-widest transition-all whitespace-nowrap relative
-                  ${activeTab === tab
-                    ? 'text-gold-400'
-                    : 'text-platinum-500 hover:text-platinum-300'}`}
-              >
-                {tab === 'tips' ? 'Advisor' : tab === 'dashboard' ? 'Portfolio' : tab === 'currency' ? 'Exchange' : tab}
-                {activeTab === tab && (
-                  <motion.div layoutId="activeTabUnderline" className="absolute bottom-0 left-0 right-0 h-0.5 bg-gold-gradient shadow-[0_-2px_10px_rgba(212,175,55,0.5)]"></motion.div>
-                )}
-              </button>
+                  <t.icon size={16} /> {t.label}
+                  {activeTab === t.id && <motion.span layoutId="tab-underline" className="absolute left-2 right-2 -bottom-px h-0.5 bg-gold-gradient rounded-full" />}
+                </button>
+              </li>
             ))}
+          </ul>
+        </nav>
+      </header>
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8">
+        {data.needsMigration && (
+          <div className="mb-6 rounded-2xl border border-gold-500/40 bg-gold-500/5 p-4 sm:p-5 flex gap-3">
+            <Database size={20} className="text-gold-500 shrink-0 mt-0.5" />
+            <div className="text-sm text-platinum-200">
+              <p className="font-semibold text-white">One-time database update needed</p>
+              <p className="mt-1">Run <code className="px-1.5 py-0.5 rounded bg-obsidian-900 text-gold-400">supabase/migrations/20261116000000_core_budgeting.sql</code> in the Supabase SQL editor, then refresh. Until then, income, budgets and goals can’t be saved.</p>
+            </div>
           </div>
+        )}
 
-          {/* ACTIVE TAB CONTENT */}
-          <div className="relative z-10">
-            <Suspense fallback={<div className="h-96 animate-pulse flex items-center justify-center text-platinum-500">Loading module...</div>}>
-              <AnimatePresence mode="wait">
-                <motion.div 
-                  key={activeTab}
-                  variants={tabVariants}
-                  initial="hidden"
-                  animate="visible"
-                  exit="exit"
-                >
-                  {activeTab === 'dashboard' && (
-                    <OverviewTab 
-                      expenses={filteredExpenses} 
-                      categoryBudgets={categoryBudgets} 
-                      selectedCurrency={selectedCurrency} 
-                      setActiveTab={setActiveTab}
-                    />
-                  )}
-
-                  {activeTab === 'expenses' && (
-                    <ExpensesTab 
-                      expenses={filteredExpenses}
-                      onAddExpense={handleAddExpense}
-                      onUpdateExpense={handleUpdateExpense}
-                      onDeleteExpense={handleDeleteExpense}
-                      categoryBudgets={categoryBudgets}
-                      onSetBudget={handleSetBudget}
-                      selectedCurrency={selectedCurrency}
-                    />
-                  )}
-
-                  {activeTab === 'income' && (
-                    <IncomeTab 
-                      income={income}
-                      onAddIncome={handleAddIncome}
-                      onRemoveIncome={handleRemoveIncome}
-                      selectedMonth={selectedMonth}
-                      selectedYear={selectedYear}
-                      selectedCurrency={selectedCurrency}
-                    />
-                  )}
-
-                  {activeTab === 'goals' && (
-                    <GoalsTab 
-                      goals={goals}
-                      onAddGoal={handleAddGoal}
-                      onRemoveGoal={handleRemoveGoal}
-                      totalSavings={netSavings}
-                      selectedCurrency={selectedCurrency}
-                    />
-                  )}
-
-                  {activeTab === 'tips' && (
-                    <SavingTipsTab 
-                      totalIncome={totalIncome}
-                      totalExpenses={totalExpenses}
-                      goals={goals}
-                      categoryBudgets={categoryBudgets}
-                      selectedCurrency={selectedCurrency}
-                      selectedMonth={selectedMonth}
-                      selectedYear={selectedYear}
-                    />
-                  )}
-
-                  {activeTab === 'currency' && (
-                    <div className="max-w-3xl mx-auto">
-                      <CurrencyConverter />
-                    </div>
-                  )}
-
-                  {activeTab === 'profile' && (
-                    <ProfileTab 
-                      selectedCurrency={selectedCurrency}
-                      setSelectedCurrency={setSelectedCurrency}
-                      CURRENCIES={CURRENCIES}
-                    />
-                  )}
-                </motion.div>
-              </AnimatePresence>
-            </Suspense>
+        {/* Greeting + month switcher */}
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
+          <div>
+            <h1 className="text-2xl sm:text-3xl font-serif text-white">Hi, {name}</h1>
+            <p className="text-platinum-400 mt-1">{activeTab === 'overview' ? `Here’s how ${monthLabel(year, month)} is going.` : TABS.find((t) => t.id === activeTab)?.label}</p>
           </div>
+          {activeTab !== 'settings' && (
+            <div className="flex items-center gap-1 self-start sm:self-auto rounded-xl border border-obsidian-700 bg-obsidian-800/60 p-1">
+              <button className="icon-btn" onClick={() => shiftMonth(-1)} aria-label="Previous month"><ChevronLeft size={18} /></button>
+              <span className="min-w-[9.5rem] text-center font-semibold text-platinum-100" aria-live="polite">{monthLabel(year, month)}</span>
+              <button className="icon-btn" onClick={() => shiftMonth(1)} aria-label="Next month"><ChevronRight size={18} /></button>
+              {!isCurrentMonth && (
+                <button className="text-sm font-medium text-gold-500 hover:text-gold-400 px-2" onClick={() => setYm({ year: now.getFullYear(), month: now.getMonth() })}>Today</button>
+              )}
+            </div>
+          )}
+        </div>
 
-        </main>
-      </div>
+        {data.loading ? (
+          <div className="space-y-4" aria-busy="true">
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">{[0, 1, 2, 3].map((i) => <div key={i} className="h-28 rounded-2xl bg-obsidian-800/60 animate-pulse" />)}</div>
+            <div className="h-80 rounded-2xl bg-obsidian-800/60 animate-pulse" />
+          </div>
+        ) : (
+          <Suspense fallback={<div className="h-80 rounded-2xl bg-obsidian-800/60 animate-pulse" />}>
+            <AnimatePresence mode="wait">
+              <motion.div key={activeTab} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.2 }}>
+                {activeTab === 'overview' && (
+                  <div className="space-y-6">
+                    <MetricCards earned={summary.earned} spent={summary.spent} totalBudget={totalBudget} currency={currency} setActiveTab={goTab} />
+                    <OverviewTab {...tabProps} summary={summary} setActiveTab={goTab} onAddExpense={openAddExpense} onEditExpense={openEditExpense} onStartSetup={() => setSetupOpen(true)} />
+                  </div>
+                )}
+                {activeTab === 'expenses' && <ExpensesTab {...tabProps} onAddExpense={openAddExpense} onEditExpense={openEditExpense} onImport={() => setImportOpen(true)} />}
+                {activeTab === 'income' && <IncomeTab {...tabProps} />}
+                {activeTab === 'budgets' && <BudgetsTab {...tabProps} onManageCategories={() => goTab('settings', 'categories')} />}
+                {activeTab === 'bills' && <BillsTab {...tabProps} onAddBill={() => openAddExpense({ mode: 'manual', defaults: { isRecurring: true } })} onEditExpense={openEditExpense} />}
+                {activeTab === 'goals' && <GoalsTab {...tabProps} />}
+                {activeTab === 'advisor' && <AdvisorTab {...tabProps} />}
+                {activeTab === 'settings' && (
+                  <SettingsTab
+                    {...tabProps}
+                    user={user}
+                    onCurrencyChange={changeCurrency}
+                    theme={theme}
+                    toggleTheme={toggleTheme}
+                    onImport={() => setImportOpen(true)}
+                    onStartSetup={() => setSetupOpen(true)}
+                    focusSection={settingsFocus}
+                    installPrompt={installPrompt}
+                    onInstall={install}
+                  />
+                )}
+              </motion.div>
+            </AnimatePresence>
+          </Suspense>
+        )}
+      </main>
+
+      {/* Desktop quick add */}
+      <button
+        onClick={() => openAddExpense()}
+        className="hidden md:flex fixed bottom-6 right-6 z-40 btn-primary !rounded-full !px-6 !py-4 shadow-2xl"
+        aria-label="Add expense"
+      >
+        <Plus size={20} /> Add expense
+      </button>
+
+      {/* Mobile bottom nav */}
+      <nav className="md:hidden fixed bottom-0 inset-x-0 z-50 border-t border-obsidian-700 bg-obsidian-900/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom)]" aria-label="Main">
+        <ul className="grid grid-cols-5 items-end">
+          {MOBILE_PRIMARY.slice(0, 2).map((id) => {
+            const t = TABS.find((x) => x.id === id);
+            return <MobileNavItem key={id} tab={t} active={activeTab === id} onClick={() => goTab(id)} />;
+          })}
+          <li className="flex justify-center">
+            <button onClick={() => openAddExpense()} className="-mt-6 w-14 h-14 rounded-full bg-gold-gradient text-[#0a0a0a] flex items-center justify-center shadow-[0_8px_24px_rgba(212,175,55,0.4)]" aria-label="Add expense">
+              <Plus size={26} />
+            </button>
+          </li>
+          <MobileNavItem tab={TABS.find((x) => x.id === 'budgets')} active={activeTab === 'budgets'} onClick={() => goTab('budgets')} />
+          <MobileNavItem
+            tab={{ id: 'more', label: 'More', icon: MoreHorizontal }}
+            active={!MOBILE_PRIMARY.includes(activeTab)}
+            onClick={() => setMoreOpen(true)}
+          />
+        </ul>
+      </nav>
+
+      <Modal open={moreOpen} onClose={() => setMoreOpen(false)} title="More">
+        <ul className="grid grid-cols-3 gap-3">
+          {TABS.filter((t) => !MOBILE_PRIMARY.includes(t.id)).map((t) => (
+            <li key={t.id}>
+              <button onClick={() => goTab(t.id)} className={`w-full flex flex-col items-center gap-2 rounded-xl border p-4 ${activeTab === t.id ? 'border-gold-500 text-gold-500' : 'border-obsidian-700 text-platinum-200'}`}>
+                <t.icon size={22} /> <span className="text-sm font-medium">{t.label}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </Modal>
+
+      <ExpenseModal
+        open={expenseModal.open}
+        onClose={() => setExpenseModal({ open: false })}
+        startMode={expenseModal.mode}
+        expense={expenseModal.expense}
+        defaults={expenseModal.defaults}
+        categories={data.expenseCategories}
+        currency={currency}
+        userId={user?.id}
+        onAdd={data.addExpense}
+        onUpdate={data.updateExpense}
+      />
+
+      <Suspense fallback={null}>
+        {importOpen && <ImportStatementModal open={importOpen} onClose={() => setImportOpen(false)} data={data} currency={currency} />}
+        {setupOpen && (
+          <OnboardingWizard
+            open={setupOpen}
+            onClose={() => setSetupOpen(false)}
+            user={user}
+            data={data}
+            currency={currency}
+            onCurrencyChange={changeCurrency}
+          />
+        )}
+      </Suspense>
     </div>
   );
 };
+
+const MobileNavItem = ({ tab, active, onClick }) => (
+  <li>
+    <button onClick={onClick} aria-current={active ? 'page' : undefined} className={`w-full flex flex-col items-center gap-1 py-2.5 text-xs font-medium ${active ? 'text-gold-500' : 'text-platinum-400'}`}>
+      <tab.icon size={22} />
+      {tab.label}
+    </button>
+  </li>
+);
 
 export default DashboardPage;
