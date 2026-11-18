@@ -1,153 +1,156 @@
-import React from 'react';
-import { Home, ShoppingCart, Zap, Film, Coffee, Activity, ArrowRight } from 'lucide-react';
+import React, { useMemo } from 'react';
+import { ArrowRight, CheckCircle2, Circle, Rocket, Repeat } from 'lucide-react';
+import CategoryIcon from './ui/CategoryIcon';
+import TrendsCard from './TrendsCard';
 import RechartsSpendingChart from './RechartsSpendingChart';
+import { activeBills } from '../lib/insights';
+import { formatMoney, formatDate } from '../lib/format';
 
-const OverviewTab = ({ expenses, categoryBudgets, selectedCurrency, setActiveTab }) => {
-  const categories = ['Groceries', 'Utilities', 'Entertainment', 'Transportation', 'Home', 'Housing & Rent', 'Other'];
-
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat(navigator.language, {
-      style: 'currency',
-      currency: selectedCurrency,
-    }).format(amount);
-  };
+const GettingStarted = ({ data, onStartSetup, setActiveTab, onAddExpense }) => {
+  const steps = [
+    { done: data.income.length > 0, label: 'Add your income', action: () => setActiveTab('income') },
+    { done: data.expenses.some((e) => e.isRecurring), label: 'Add your monthly bills', action: () => setActiveTab('bills') },
+    { done: data.expenseCategories.some((c) => Number(c.budget) > 0), label: 'Set your budgets', action: () => setActiveTab('budgets') },
+    { done: data.expenses.some((e) => !e.isRecurring), label: 'Record something you spent', action: () => onAddExpense() },
+    { done: data.goals.length > 0, label: 'Create a savings goal', action: () => setActiveTab('goals') },
+  ];
+  const doneCount = steps.filter((s) => s.done).length;
+  if (doneCount === steps.length) return null;
 
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 sm:gap-10 animate-fadeIn">
-      {/* LEFT COLUMN: BUDGET PROGRESS & CHART */}
-      <div className="xl:col-span-2 space-y-6 sm:space-y-10">
-        {/* BUDGET PROGRESS */}
-        <div className="glass-card rounded-2xl p-6 sm:p-10 relative overflow-hidden border-gold-gradient">
-          <div className="flex justify-between items-center mb-10 border-b border-obsidian-700/50 pb-4">
-            <h2 className="text-2xl font-serif text-white tracking-wide">Budget Allocation</h2>
-            <button onClick={() => setActiveTab('expenses')} className="text-xs font-bold uppercase tracking-widest text-gold-500 hover:text-gold-400 transition-colors flex items-center gap-2 group">
-              Manage Budgets <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" />
+    <div className="card border-gold-gradient">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
+        <div>
+          <h2 className="card-title flex items-center gap-2"><Rocket size={22} className="text-gold-500" /> Get set up</h2>
+          <p className="text-platinum-400 mt-1">{doneCount} of {steps.length} done. A couple of minutes now makes everything else work.</p>
+        </div>
+        <button className="btn-primary shrink-0" onClick={onStartSetup}>Guided setup</button>
+      </div>
+      <ul className="grid sm:grid-cols-2 lg:grid-cols-5 gap-2">
+        {steps.map((s) => (
+          <li key={s.label}>
+            <button onClick={s.action} disabled={s.done} className={`w-full flex items-center gap-2 rounded-xl border px-3 py-3 text-sm text-left transition-colors ${s.done ? 'border-emerald-500/30 text-platinum-400' : 'border-obsidian-600 text-platinum-200 hover:border-gold-500/60'}`}>
+              {s.done ? <CheckCircle2 size={18} className="text-emerald-500 shrink-0" /> : <Circle size={18} className="text-platinum-500 shrink-0" />}
+              <span className={s.done ? 'line-through' : ''}>{s.label}</span>
             </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+const OverviewTab = ({ data, summary, year, month, currency, setActiveTab, onAddExpense, onEditExpense, onStartSetup }) => {
+  const budgeted = data.expenseCategories
+    .filter((c) => Number(c.budget) > 0)
+    .map((c) => ({ ...c, spent: summary.byCategory[c.name] || 0 }))
+    .sort((a, b) => b.spent / b.budget - a.spent / a.budget)
+    .slice(0, 6);
+  const upcoming = useMemo(() => activeBills(data.expenses).filter((b) => b.daysUntil <= 14).slice(0, 4), [data.expenses]);
+  const recent = summary.expenses.slice(0, 6);
+
+  return (
+    <div className="space-y-6">
+      <GettingStarted data={data} onStartSetup={onStartSetup} setActiveTab={setActiveTab} onAddExpense={onAddExpense} />
+
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div className="xl:col-span-2 space-y-6">
+          <div className="card">
+            <div className="flex items-center justify-between mb-5">
+              <h2 className="card-title">Budgets</h2>
+              <button onClick={() => setActiveTab('budgets')} className="text-sm font-medium text-gold-500 hover:text-gold-400 flex items-center gap-1">Manage <ArrowRight size={16} /></button>
+            </div>
+            {budgeted.length === 0 ? (
+              <div className="text-center py-8">
+                <p className="text-platinum-300">You haven’t set any budgets yet.</p>
+                <button onClick={() => setActiveTab('budgets')} className="btn-secondary mt-4">Set budgets</button>
+              </div>
+            ) : (
+              <ul className="space-y-5">
+                {budgeted.map((c) => {
+                  const pct = (c.spent / c.budget) * 100;
+                  const over = pct > 100;
+                  const warn = !over && pct >= 85;
+                  return (
+                    <li key={c.id}>
+                      <div className="flex items-center justify-between gap-3 mb-2">
+                        <span className="flex items-center gap-3 min-w-0">
+                          <CategoryIcon iconKey={c.icon} size={16} className="!p-2" />
+                          <span className="min-w-0">
+                            <span className="block font-medium text-platinum-100 truncate">{c.name}</span>
+                            <span className={`block text-sm ${over ? 'text-red-400' : warn ? 'text-gold-500' : 'text-platinum-500'}`}>
+                              {over ? `${formatMoney(c.spent - c.budget, currency)} over` : `${formatMoney(c.budget - c.spent, currency)} left`}
+                            </span>
+                          </span>
+                        </span>
+                        <span className="text-sm text-platinum-400 tabular-nums whitespace-nowrap"><span className="text-white font-semibold">{formatMoney(c.spent, currency)}</span> / {formatMoney(c.budget, currency)}</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-obsidian-900 overflow-hidden">
+                        <div className={`h-full rounded-full ${over ? 'bg-red-500' : warn ? 'bg-gold-400' : 'bg-gold-gradient'}`} style={{ width: `${Math.min(100, pct)}%` }} />
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
 
-          <div className="space-y-8">
-            {categories.map((catString) => {
-              const totalSpent = expenses.filter(exp => exp.category === catString).reduce((sum, exp) => sum + exp.amount, 0);
-              const limit = categoryBudgets[catString] || 0;
+          <TrendsCard data={data} year={year} month={month} currency={currency} />
+          <RechartsSpendingChart byCategory={summary.byCategory} categories={data.expenseCategories} currency={currency} />
+        </div>
 
-              if (limit === 0 && totalSpent === 0) return null;
-
-              const percentage = limit > 0 ? Math.min((totalSpent / limit) * 100, 100) : (totalSpent > 0 ? 100 : 0);
-              const isOverBudget = limit > 0 && totalSpent > limit;
-              const isWarning = limit > 0 && totalSpent > limit * 0.85 && !isOverBudget;
-
-              let Icon = Activity;
-              
-              if (catString === 'Home' || catString === 'Housing & Rent') { Icon = Home; }
-              else if (catString === 'Groceries') { Icon = ShoppingCart; }
-              else if (catString === 'Utilities') { Icon = Zap; }
-              else if (catString === 'Entertainment') { Icon = Film; }
-              else if (catString === 'Transportation') { Icon = Coffee; }
-
-              return (
-                <div key={catString} className="w-full group">
-                  <div className="flex justify-between items-center mb-3">
-                    <div className="flex items-center gap-4">
-                      <div className="p-3 bg-obsidian-900 rounded-xl border border-obsidian-700 text-gold-500 shadow-inner group-hover:border-gold-500/30 transition-colors">
-                        <Icon size={16} />
-                      </div>
-                      <div>
-                        <span className="font-bold text-sm tracking-wide text-platinum-200">{catString}</span>
-                        {isOverBudget ? (
-                          <span className="block text-[10px] uppercase tracking-widest text-red-500 font-bold mt-1">Exceeded by {formatCurrency(totalSpent - limit)}</span>
-                        ) : isWarning ? (
-                          <span className="block text-[10px] uppercase tracking-widest text-gold-500 font-bold mt-1">Nearing limit</span>
-                        ) : null}
-                      </div>
+        <div className="space-y-6">
+          <div className="card">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="card-title">Coming up</h2>
+              <button onClick={() => setActiveTab('bills')} className="text-sm font-medium text-gold-500 hover:text-gold-400 flex items-center gap-1">All bills <ArrowRight size={16} /></button>
+            </div>
+            {upcoming.length === 0 ? (
+              <p className="text-platinum-500 text-sm">No bills due in the next two weeks.</p>
+            ) : (
+              <ul className="space-y-3">
+                {upcoming.map((b) => (
+                  <li key={b.id} className="flex items-center gap-3">
+                    <CategoryIcon name={b.category} categories={data.categories} size={16} className="!p-2" />
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-platinum-100 truncate">{b.name}</p>
+                      <p className="text-sm text-platinum-500">{b.daysUntil === 0 ? 'Today' : b.daysUntil === 1 ? 'Tomorrow' : `In ${b.daysUntil} days`}</p>
                     </div>
-                    <div className="text-right">
-                      <div className="flex items-baseline gap-2">
-                        <span className="font-serif text-xl text-white">{formatCurrency(totalSpent)}</span>
-                        {limit > 0 && <span className="text-xs font-bold tracking-wider text-platinum-500 uppercase">/ {formatCurrency(limit)}</span>}
-                      </div>
-                    </div>
-                  </div>
+                    <span className="font-semibold text-white tabular-nums">{formatMoney(b.amount, currency)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
 
-                  <div className="w-full h-1.5 bg-obsidian-900 rounded-full overflow-hidden shadow-inner border border-obsidian-800">
-                    <div
-                      className={`h-full rounded-full transition-all duration-1000 ease-out relative overflow-hidden ${isOverBudget ? 'bg-red-500' : 'bg-gold-gradient'}`}
-                      style={{ width: `${limit > 0 ? percentage : (totalSpent > 0 ? 100 : 0)}%` }}
-                    >
-                      <div className="absolute top-0 left-0 right-0 bottom-0 bg-white/30 transform -skew-x-12 -translate-x-full group-hover:translate-x-full transition-transform duration-1000"></div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-            
-            {Object.keys(categoryBudgets).length === 0 && expenses.length === 0 && (
-              <div className="text-center py-12 text-platinum-500">
-                <p className="font-serif italic text-lg mb-4">No allocations established.</p>
-                <button onClick={() => setActiveTab('expenses')} className="text-xs font-bold uppercase tracking-widest text-gold-500 border-b border-gold-500 hover:text-gold-400 pb-1">Establish your first budget</button>
+          <div className="card">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="card-title">Recent</h2>
+              <button onClick={() => setActiveTab('expenses')} className="text-sm font-medium text-gold-500 hover:text-gold-400 flex items-center gap-1">See all <ArrowRight size={16} /></button>
+            </div>
+            {recent.length === 0 ? (
+              <div className="text-center py-6">
+                <p className="text-platinum-500 text-sm mb-4">Nothing recorded this month.</p>
+                <button className="btn-secondary" onClick={() => onAddExpense()}>Add an expense</button>
               </div>
+            ) : (
+              <ul className="space-y-1">
+                {recent.map((e) => (
+                  <li key={`${e.id}-${e.displayDate}`}>
+                    <button onClick={() => onEditExpense(e)} className="w-full flex items-center gap-3 rounded-xl p-2 -mx-2 text-left hover:bg-obsidian-700/40">
+                      <CategoryIcon name={e.category} categories={data.categories} size={16} className="!p-2" />
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-platinum-100 truncate flex items-center gap-1.5">{e.name}{e.isRecurring && <Repeat size={12} className="text-gold-500 shrink-0" />}</p>
+                        <p className="text-sm text-platinum-500">{e.category} · {formatDate(e.displayDate)}</p>
+                      </div>
+                      <span className="font-semibold text-white tabular-nums">{formatMoney(e.amount, currency)}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
         </div>
-
-        {/* CHART MODULE */}
-        <RechartsSpendingChart 
-          expenses={expenses} 
-          categoryBudgets={categoryBudgets} 
-          selectedCurrency={selectedCurrency} 
-        />
-      </div>
-
-      {/* RIGHT COLUMN: RECENT TRANSACTIONS */}
-      <div className="glass-card rounded-2xl p-6 sm:p-10 relative flex flex-col h-full border-gold-gradient">
-        <div className="flex justify-between items-center mb-8 border-b border-obsidian-700/50 pb-4">
-          <h2 className="text-2xl font-serif text-white tracking-wide">Recent Activity</h2>
-        </div>
-
-        <div className="space-y-4 flex-1">
-          {expenses.slice(0, 8).map((exp) => {
-            let Icon = Activity;
-
-            if (exp.category === 'Home' || exp.category === 'Housing & Rent') { Icon = Home; }
-            else if (exp.category === 'Groceries') { Icon = ShoppingCart; }
-            else if (exp.category === 'Utilities') { Icon = Zap; }
-            else if (exp.category === 'Entertainment') { Icon = Film; }
-            else if (exp.category === 'Transportation') { Icon = Coffee; }
-
-            return (
-              <div key={exp.id || exp._id} className="group flex items-center justify-between p-4 rounded-xl transition-all cursor-pointer bg-obsidian-900/40 border border-transparent hover:border-gold-500/20 hover:bg-obsidian-800/60">
-                <div className="flex items-center gap-4">
-                  <div className="p-2.5 rounded-lg bg-obsidian-900 text-platinum-400 group-hover:text-gold-500 border border-obsidian-700 shadow-inner transition-colors">
-                    <Icon size={16} />
-                  </div>
-                  <div>
-                    <p className="font-bold text-sm tracking-wide text-platinum-200 group-hover:text-white transition-colors">{exp.name}</p>
-                    <p className="text-[10px] font-bold uppercase tracking-widest mt-1 text-platinum-500">
-                      {exp.category} &bull; {new Date(exp.created_at || Date.now()).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                    </p>
-                  </div>
-                </div>
-                <span className="font-serif text-lg text-white">
-                  -{formatCurrency(exp.amount)}
-                </span>
-              </div>
-            )
-          })}
-          {expenses.length === 0 && (
-            <div className="flex flex-col items-center justify-center h-full text-center text-platinum-500">
-              <Activity size={32} className="mb-4 opacity-30 text-gold-500" />
-              <p className="font-serif italic">No recent transactions.</p>
-            </div>
-          )}
-        </div>
-
-        {expenses.length > 0 && (
-          <button
-            onClick={() => setActiveTab('expenses')}
-            className="w-full mt-8 py-4 rounded-xl border border-obsidian-600 text-xs font-bold uppercase tracking-widest text-platinum-300 hover:bg-obsidian-800 hover:text-gold-400 hover:border-gold-500/50 transition-all"
-          >
-            View Full Ledger
-          </button>
-        )}
       </div>
     </div>
   );

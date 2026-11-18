@@ -1,444 +1,133 @@
-import React, { useState, useRef } from 'react';
-import { supabase } from '../utils/supabase';
-import { ShoppingCart, Zap, Film, Home, Coffee, Activity, Edit2, Trash2, Wand2, UploadCloud, Loader2 } from 'lucide-react';
+import React, { useMemo, useState } from 'react';
+import { Plus, Pencil, Trash2, Repeat, Upload, Download, Receipt, Search } from 'lucide-react';
+import CategoryIcon from './ui/CategoryIcon';
+import ReceiptButton from './ui/ReceiptButton';
+import { entriesForMonth, sumAmounts, endOfPreviousMonth } from '../lib/recurring';
+import { formatMoney, formatDate, monthLabel, MONTHS } from '../lib/format';
+import { exportMonthCSV } from '../lib/report';
+import { useConfirm } from '../context/ConfirmContext';
+import { useToast } from '../context/ToastContext';
 
-const ExpensesTab = ({ expenses, onAddExpense, onUpdateExpense, onDeleteExpense, categoryBudgets, onSetBudget, selectedCurrency }) => {
-  const categories = ['Groceries', 'Utilities', 'Entertainment', 'Transportation', 'Home', 'Housing & Rent', 'Other'];
-  
+const ExpensesTab = ({ data, year, month, currency, onAddExpense, onEditExpense, onImport }) => {
+  const confirm = useConfirm();
+  const { toast } = useToast();
   const [filterCategory, setFilterCategory] = useState('All');
-  const [searchQuery, setSearchQuery] = useState('');
-  const [sortBy, setSortBy] = useState('date_desc');
-  
-  // Expense Form State
-  const [editingId, setEditingId] = useState(null);
-  const [name, setName] = useState('');
-  const [amount, setAmount] = useState('');
-  const [category, setCategory] = useState('Groceries');
-  const [isRecurring, setIsRecurring] = useState(false);
+  const [search, setSearch] = useState('');
+  const [sortBy, setSortBy] = useState('date');
 
-  // AI State
-  const [smartInput, setSmartInput] = useState('');
-  const [isCategorizing, setIsCategorizing] = useState(false);
-  const [isParsingReceipt, setIsParsingReceipt] = useState(false);
-  const [aiError, setAiError] = useState(null);
-  const fileInputRef = useRef(null);
+  const monthEntries = useMemo(() => entriesForMonth(data.expenses, year, month), [data.expenses, year, month]);
+  const total = sumAmounts(monthEntries);
 
-  // Budget Form State
-  const [budgetCategory, setBudgetCategory] = useState(categories[0]);
-  const [budgetAmount, setBudgetAmount] = useState('');
+  const visible = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return monthEntries
+      .filter((e) => filterCategory === 'All' || e.category === filterCategory)
+      .filter((e) => !q || e.name.toLowerCase().includes(q) || e.category.toLowerCase().includes(q))
+      .sort((a, b) => (sortBy === 'amount' ? b.amount - a.amount : a.displayDate < b.displayDate ? 1 : -1));
+  }, [monthEntries, filterCategory, search, sortBy]);
 
-  const formatCurrency = (val) => new Intl.NumberFormat(navigator.language, { style: 'currency', currency: selectedCurrency }).format(val);
+  const usedCategories = [...new Set(monthEntries.map((e) => e.category))];
+  const filterOptions = [...new Set([...data.expenseCategories.map((c) => c.name), ...usedCategories])];
 
-  // AI Methods
-  const getAuthToken = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    return session?.access_token;
-  };
-
-  const handleSmartCategorize = async (e) => {
-    e.preventDefault();
-    if (!smartInput.trim()) return;
-    
-    setIsCategorizing(true);
-    setAiError(null);
-    try {
-      const token = await getAuthToken();
-      const res = await fetch('http://localhost:5000/api/ai/categorize', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ natural_language_input: smartInput })
+  const handleDelete = async (exp) => {
+    if (exp.isRecurring && exp.isOccurrence) {
+      const choice = await confirm({
+        title: `Delete “${exp.name}”?`,
+        message: `This repeats every month. You can stop it from ${MONTHS[month]} onward and keep earlier months, or remove it from every month.`,
+        choices: [
+          { value: 'stop', label: `Stop from ${MONTHS[month]}`, tone: 'secondary' },
+          { value: 'all', label: 'Delete from all months', tone: 'danger' },
+        ],
       });
-      
-      const result = await res.json();
-      if (!result.success) throw new Error(result.error || 'AI Failed');
-
-      const data = result.data;
-      // Pre-fill form
-      setName(data.merchant || 'Unknown');
-      setAmount(data.amount?.toString() || '');
-      setCategory(categories.includes(data.category) ? data.category : 'Other');
-      setIsRecurring(data.isRecurring || false);
-      setSmartInput('');
-      
-      // Auto-submit immediately for magical UX
-      onAddExpense({ 
-        name: data.merchant || 'Unknown', 
-        amount: parseFloat(data.amount || 0), 
-        category: categories.includes(data.category) ? data.category : 'Other', 
-        isRecurring: data.isRecurring || false 
-      });
-
-    } catch (err) {
-      setAiError(err.message);
-    } finally {
-      setIsCategorizing(false);
+      if (choice === 'stop') {
+        const ok = await data.updateExpense(exp.id, { recurring_end: endOfPreviousMonth(year, month) });
+        if (ok) toast({ message: `“${exp.name}” won’t appear from ${MONTHS[month]} onward` });
+      } else if (choice === 'all') {
+        data.deleteExpense(exp);
+      }
+      return;
     }
+    data.deleteExpense(exp);
   };
-
-  const handleReceiptUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    setIsParsingReceipt(true);
-    setAiError(null);
-
-    try {
-      // 1. Upload to Supabase Storage
-      const { data: { session } } = await supabase.auth.getSession();
-      const userId = session?.user?.id;
-      if (!userId) throw new Error('Not authenticated');
-
-      const fileName = `${userId}/${Date.now()}_${file.name}`;
-      const { error: uploadError } = await supabase.storage
-        .from('receipts')
-        .upload(fileName, file);
-
-      if (uploadError) throw new Error(`Upload failed: ${uploadError.message}`);
-
-      // 2. Get Public URL
-      const { data: { publicUrl } } = supabase.storage
-        .from('receipts')
-        .getPublicUrl(fileName);
-
-      // 3. Send URL to Backend AI parser
-      const token = session.access_token;
-      const res = await fetch('http://localhost:5000/api/ai/parse-receipt', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-        body: JSON.stringify({ storage_url: publicUrl })
-      });
-
-      const result = await res.json();
-      if (!result.success) throw new Error(result.error || 'AI Failed');
-
-      const data = result.data;
-      // Pre-fill form (wait for user confirmation instead of auto-submitting for receipts)
-      setName(data.merchant || 'Scanned Receipt');
-      setAmount(data.amount?.toString() || '');
-      setCategory(categories.includes(data.category) ? data.category : 'Other');
-      
-      window.scrollTo({ top: 0, behavior: 'smooth' });
-
-    } catch (err) {
-      setAiError(err.message);
-    } finally {
-      setIsParsingReceipt(false);
-      if (fileInputRef.current) fileInputRef.current.value = '';
-    }
-  };
-
-  // Standard Form Handlers
-  const handleExpenseSubmit = (e) => {
-    e.preventDefault();
-    if (!name || !amount) return;
-
-    if (editingId) {
-      onUpdateExpense({ id: editingId, _id: editingId, name, amount: parseFloat(amount), category, isRecurring });
-      setEditingId(null);
-    } else {
-      onAddExpense({ name, amount: parseFloat(amount), category, isRecurring });
-    }
-    setName('');
-    setAmount('');
-    setIsRecurring(false);
-  };
-
-  const startEdit = (exp) => {
-    setEditingId(exp.id || exp._id);
-    setName(exp.name);
-    setAmount(exp.amount.toString());
-    setCategory(exp.category);
-    setIsRecurring(exp.isRecurring || false);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const handleBudgetSubmit = (e) => {
-    e.preventDefault();
-    if (budgetAmount) {
-      onSetBudget(budgetCategory, parseFloat(budgetAmount));
-      setBudgetAmount('');
-    }
-  };
-
-  const filteredExpenses = expenses
-    .filter(e => filterCategory === 'All' || e.category === filterCategory)
-    .filter(e => e.name.toLowerCase().includes(searchQuery.toLowerCase()) || e.category.toLowerCase().includes(searchQuery.toLowerCase()))
-    .sort((a, b) => {
-      if (sortBy === 'amount_desc') return b.amount - a.amount;
-      return new Date(b.created_at || Date.now()) - new Date(a.created_at || Date.now());
-    });
 
   return (
-    <div className="space-y-10 animate-fadeIn max-w-5xl mx-auto relative z-10">
-      
-      {aiError && (
-        <div className="p-4 bg-red-500/10 border border-red-500/30 text-red-400 rounded-xl font-medium shadow-lg backdrop-blur-sm">
-          Intelligent Processing Error: {aiError}
-        </div>
-      )}
-
-      {/* INTELLIGENT INPUT SECTION */}
-      {!editingId && (
-        <div className="glass-card p-6 rounded-2xl relative border-gold-gradient overflow-hidden">
-          <div className="absolute top-0 right-0 p-4 opacity-10">
-            <Wand2 size={100} />
+    <div className="space-y-6 max-w-5xl mx-auto">
+      <div className="card">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-6">
+          <div>
+            <h2 className="card-title">Spending</h2>
+            <p className="text-platinum-400 mt-1">
+              {monthLabel(year, month)} · <span className="text-white font-semibold">{formatMoney(total, currency)}</span> across {monthEntries.length} {monthEntries.length === 1 ? 'entry' : 'entries'}
+            </p>
           </div>
-          <h3 className="text-xl font-serif text-white mb-4 tracking-wide flex items-center gap-2">
-            <Wand2 size={20} className="text-gold-500" />
-            Intelligent Capture
-          </h3>
-          
-          <div className="flex flex-col md:flex-row gap-6">
-            <form onSubmit={handleSmartCategorize} className="flex-1 relative">
-              <input
-                type="text"
-                value={smartInput}
-                onChange={(e) => setSmartInput(e.target.value)}
-                placeholder="e.g. 'Uber to the airport for $45' or 'Groceries at Woolworths R1200'"
-                className="w-full rounded-xl pl-4 pr-12 py-4 bg-obsidian-900/80 border border-obsidian-600 text-white placeholder-obsidian-500 focus:outline-none focus:border-gold-500 transition-colors font-medium shadow-inner"
-                disabled={isCategorizing}
-              />
-              <button 
-                type="submit" 
-                disabled={isCategorizing || !smartInput}
-                className="absolute right-2 top-2 bottom-2 aspect-square rounded-lg bg-gold-gradient flex items-center justify-center text-obsidian-900 hover:opacity-90 disabled:opacity-50 transition-all"
-              >
-                {isCategorizing ? <Loader2 size={18} className="animate-spin" /> : <Activity size={18} />}
-              </button>
-            </form>
-
-            <div className="hidden md:block w-px bg-obsidian-700"></div>
-
-            <div 
-              className="flex-1 rounded-xl border border-dashed border-obsidian-600 bg-obsidian-900/50 hover:bg-obsidian-800/80 hover:border-gold-500 transition-all cursor-pointer flex flex-col items-center justify-center p-4 relative"
-              onClick={() => fileInputRef.current?.click()}
-            >
-              {isParsingReceipt ? (
-                <div className="flex items-center gap-3 text-gold-500">
-                  <Loader2 size={24} className="animate-spin" />
-                  <span className="font-bold text-xs uppercase tracking-widest">Scanning Receipt...</span>
-                </div>
-              ) : (
-                <>
-                  <UploadCloud size={24} className="text-platinum-400 mb-2" />
-                  <span className="font-bold text-[10px] uppercase tracking-widest text-platinum-400">Upload Receipt or Invoice</span>
-                </>
-              )}
-              <input 
-                type="file" 
-                ref={fileInputRef} 
-                className="hidden" 
-                accept="image/*,.pdf" 
-                onChange={handleReceiptUpload} 
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* TOP ROW: SET BUDGET & ADD EXPENSE FORMS */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
-        
-        {/* MANUAL EXPENSE FORM */}
-        <div className="glass-card p-6 sm:p-10 rounded-2xl relative border border-obsidian-700/50 shadow-2xl bg-obsidian-800/60">
-          <h3 className="text-2xl font-serif text-white mb-8 tracking-wide border-b border-obsidian-700/50 pb-4">
-            {editingId ? 'Modify Ledger Entry' : 'Manual Entry'}
-          </h3>
-          <form onSubmit={handleExpenseSubmit} className="space-y-6">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-              <div className="sm:col-span-2">
-                <label className="block text-[10px] font-bold mb-2 uppercase tracking-widest text-platinum-400">Transaction Name</label>
-                <input
-                  type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full rounded-xl px-4 py-3 bg-obsidian-900/50 border border-obsidian-600 text-white placeholder-obsidian-500 focus:outline-none focus:border-gold-500 transition-colors font-medium shadow-inner"
-                  placeholder="e.g. Fine Dining"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] font-bold mb-2 uppercase tracking-widest text-platinum-400">Amount</label>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={amount}
-                  onChange={(e) => setAmount(e.target.value)}
-                  className="w-full rounded-xl px-4 py-3 bg-obsidian-900/50 border border-obsidian-600 text-white placeholder-obsidian-500 focus:outline-none focus:border-gold-500 transition-colors font-medium shadow-inner"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-[10px] font-bold mb-2 uppercase tracking-widest text-platinum-400">Classification</label>
-                <select
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                  className="w-full rounded-xl px-4 py-3 bg-obsidian-900/50 border border-obsidian-600 text-white focus:outline-none focus:border-gold-500 transition-colors font-medium appearance-none shadow-inner cursor-pointer"
-                >
-                  {categories.map(c => <option key={c} value={c} className="bg-obsidian-900">{c}</option>)}
-                </select>
-              </div>
-            </div>
-            
-            <div className="flex items-center gap-3 py-2">
-              <input
-                type="checkbox"
-                id="isRecurring"
-                checked={isRecurring}
-                onChange={(e) => setIsRecurring(e.target.checked)}
-                className="w-5 h-5 rounded bg-obsidian-900 border-obsidian-600 text-gold-500 focus:ring-gold-500 transition-colors cursor-pointer accent-gold-500"
-              />
-              <label htmlFor="isRecurring" className="text-xs font-bold uppercase tracking-widest cursor-pointer text-platinum-400 hover:text-gold-400 transition-colors">
-                Recurring Monthly Outflow
-              </label>
-            </div>
-
-            <div className="flex gap-4 pt-4">
-              <button
-                type="submit"
-                className="flex-1 bg-gold-gradient hover:opacity-90 text-obsidian-900 font-bold text-xs uppercase tracking-widest py-4 px-4 rounded-xl transition duration-300 shadow-[0_10px_20px_rgba(212,175,55,0.2)] shimmer-effect"
-              >
-                {editingId ? 'Save Revisions' : 'Record Entry'}
-              </button>
-              {editingId && (
-                <button
-                  type="button"
-                  onClick={() => { setEditingId(null); setName(''); setAmount(''); setIsRecurring(false); }}
-                  className="flex-1 font-bold text-xs uppercase tracking-widest py-4 px-4 rounded-xl transition duration-300 border border-obsidian-600 bg-obsidian-900/50 text-platinum-300 hover:bg-obsidian-800 hover:text-white shadow-inner"
-                >
-                  Cancel
-                </button>
-              )}
-            </div>
-          </form>
-        </div>
-
-        {/* SET BUDGET FORM */}
-        <div className="glass-card p-6 sm:p-10 rounded-2xl relative border-gold-gradient">
-          <h3 className="text-2xl font-serif text-white mb-4 tracking-wide border-b border-obsidian-700/50 pb-4">Establish Allocation</h3>
-          <p className="text-xs font-medium mb-8 text-platinum-500 leading-relaxed">Define precise monthly ceilings for your expenditure categories to maintain wealth trajectories.</p>
-          
-          <form onSubmit={handleBudgetSubmit} className="space-y-6">
-            <div>
-              <label className="block text-[10px] font-bold mb-2 uppercase tracking-widest text-platinum-400">Category</label>
-              <select
-                value={budgetCategory}
-                onChange={(e) => setBudgetCategory(e.target.value)}
-                className="w-full rounded-xl px-4 py-3 bg-obsidian-900/50 border border-obsidian-600 text-white focus:outline-none focus:border-gold-500 transition-colors font-medium appearance-none shadow-inner cursor-pointer"
-              >
-                {categories.map(c => <option key={c} value={c} className="bg-obsidian-900">{c}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-[10px] font-bold mb-2 uppercase tracking-widest flex justify-between text-platinum-400">
-                <span>Allocated Limit</span>
-                {categoryBudgets[budgetCategory] && (
-                  <span className="text-gold-500">Current: {formatCurrency(categoryBudgets[budgetCategory])}</span>
-                )}
-              </label>
-              <input
-                type="number"
-                step="0.01"
-                value={budgetAmount}
-                onChange={(e) => setBudgetAmount(e.target.value)}
-                className="w-full rounded-xl px-4 py-3 bg-obsidian-900/50 border border-obsidian-600 text-white placeholder-obsidian-500 focus:outline-none focus:border-gold-500 transition-colors font-medium shadow-inner"
-                required
-              />
-            </div>
-            <div className="pt-4">
-              <button
-                type="submit"
-                className="w-full border border-gold-500 text-gold-500 hover:bg-gold-500 hover:text-obsidian-900 font-bold text-xs uppercase tracking-widest py-4 px-4 rounded-xl transition duration-300 shadow-[0_5px_15px_rgba(212,175,55,0.1)]"
-              >
-                Enforce Allocation
-              </button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-      {/* EXPENSE LIST & FILTERS */}
-      <div className="glass-card p-6 sm:p-10 rounded-2xl relative border-gold-gradient">
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-10 border-b border-obsidian-700/50 pb-6">
-          <h3 className="text-2xl font-serif text-white tracking-wide">Master Ledger</h3>
-          <div className="flex flex-col sm:flex-row w-full md:w-auto gap-4">
-            <input
-              type="text"
-              placeholder="Search Ledger..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full sm:w-48 rounded-xl px-4 py-2.5 bg-obsidian-900/50 border border-obsidian-600 text-white placeholder-obsidian-500 focus:outline-none focus:border-gold-500 transition-colors font-medium text-sm shadow-inner"
-            />
-            <select
-              value={filterCategory}
-              onChange={(e) => setFilterCategory(e.target.value)}
-              className="w-full sm:w-48 rounded-xl px-4 py-2.5 bg-obsidian-900/50 border border-obsidian-600 text-white focus:outline-none focus:border-gold-500 transition-colors font-medium text-sm appearance-none shadow-inner cursor-pointer"
-            >
-              <option value="All" className="bg-obsidian-900">All Classifications</option>
-              {categories.map(c => <option key={c} value={c} className="bg-obsidian-900">{c}</option>)}
-            </select>
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value)}
-              className="w-full sm:w-40 rounded-xl px-4 py-2.5 bg-obsidian-900/50 border border-obsidian-600 text-white focus:outline-none focus:border-gold-500 transition-colors font-medium text-sm appearance-none shadow-inner cursor-pointer"
-            >
-              <option value="date_desc" className="bg-obsidian-900">Latest First</option>
-              <option value="amount_desc" className="bg-obsidian-900">Highest Value</option>
-            </select>
+          <div className="flex flex-wrap gap-2">
+            <button className="btn-ghost !px-4" onClick={onImport}><Upload size={16} /> Import statement</button>
+            <button className="btn-ghost !px-4" onClick={() => exportMonthCSV(data, year, month)} disabled={!monthEntries.length}><Download size={16} /> Export</button>
+            <button className="btn-primary" onClick={() => onAddExpense()}><Plus size={16} /> Add expense</button>
           </div>
         </div>
 
-        <div className="space-y-4">
-          {filteredExpenses.map((exp) => {
-            let Icon = Activity;
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_auto] gap-3 mb-6">
+          <div className="relative">
+            <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-platinum-500" />
+            <input className="input !pl-10" placeholder="Search spending" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="Search spending" />
+          </div>
+          <select className="input sm:w-48" value={filterCategory} onChange={(e) => setFilterCategory(e.target.value)} aria-label="Filter by category">
+            <option value="All">All categories</option>
+            {filterOptions.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+          <select className="input sm:w-40" value={sortBy} onChange={(e) => setSortBy(e.target.value)} aria-label="Sort">
+            <option value="date">Newest first</option>
+            <option value="amount">Largest first</option>
+          </select>
+        </div>
 
-            if (exp.category === 'Home' || exp.category === 'Housing & Rent') { Icon = Home; }
-            else if (exp.category === 'Groceries') { Icon = ShoppingCart; }
-            else if (exp.category === 'Utilities') { Icon = Zap; }
-            else if (exp.category === 'Entertainment') { Icon = Film; }
-            else if (exp.category === 'Transportation') { Icon = Coffee; }
-
-            return (
-              <div key={exp.id || exp._id} className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-5 rounded-xl bg-obsidian-900/40 border border-obsidian-700 hover:border-gold-500/30 transition-all hover:bg-obsidian-800/60 group">
-                <div className="flex items-center gap-5 mb-4 sm:mb-0">
-                  <div className="p-3 rounded-xl bg-obsidian-900 text-platinum-400 group-hover:text-gold-500 border border-obsidian-700 shadow-inner transition-colors">
-                    <Icon size={20} />
+        <ul className="space-y-2">
+          {visible.map((exp) => (
+            <li key={`${exp.id}-${exp.displayDate}`}>
+              <div
+                className="row-item cursor-pointer"
+                onClick={() => onEditExpense(exp)}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => e.key === 'Enter' && onEditExpense(exp)}
+              >
+                <CategoryIcon name={exp.category} categories={data.categories} />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="font-semibold text-platinum-100 truncate">{exp.name}</p>
+                    {exp.isRecurring && <span className="badge bg-gold-500/10 text-gold-500"><Repeat size={12} /> Monthly</span>}
                   </div>
-                  <div>
-                    <div className="flex items-center gap-3">
-                      <p className="font-bold text-base text-platinum-200 group-hover:text-white transition-colors">{exp.name}</p>
-                      {exp.isRecurring && <span className="text-[9px] font-bold uppercase tracking-widest bg-gold-500/10 text-gold-500 border border-gold-500/20 px-2 py-0.5 rounded-sm">Recurring</span>}
-                    </div>
-                    <p className="text-[10px] font-bold uppercase tracking-widest mt-1 text-platinum-500">
-                      {exp.category} &bull; {new Date(exp.created_at || Date.now()).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                    </p>
-                  </div>
+                  <p className="text-sm text-platinum-500 mt-0.5">{exp.category} · {formatDate(exp.displayDate)}</p>
                 </div>
-                
-                <div className="flex items-center justify-between w-full sm:w-auto gap-6 sm:gap-8 border-t sm:border-0 pt-4 sm:pt-0 border-obsidian-700">
-                  <span className="font-serif text-xl text-white">
-                    {formatCurrency(exp.amount)}
-                  </span>
-                  <div className="flex items-center gap-2">
-                    <button onClick={() => startEdit(exp)} className="p-2 rounded-lg transition-colors text-platinum-500 hover:bg-obsidian-700 hover:text-gold-400">
-                      <Edit2 size={16} />
-                    </button>
-                    <button onClick={() => onDeleteExpense(exp.id || exp._id)} className="p-2 rounded-lg transition-colors text-platinum-500 hover:bg-red-500/20 hover:text-red-400">
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
+                <span className="font-semibold text-white tabular-nums whitespace-nowrap">{formatMoney(exp.amount, currency)}</span>
+                <div className="flex items-center" onClick={(e) => e.stopPropagation()}>
+                  <ReceiptButton path={exp.receipt_path} />
+                  <button className="icon-btn hidden sm:inline-flex" onClick={() => onEditExpense(exp)} aria-label={`Edit ${exp.name}`}><Pencil size={16} /></button>
+                  <button className="icon-btn hover:!text-red-400 hover:!bg-red-500/10" onClick={() => handleDelete(exp)} aria-label={`Delete ${exp.name}`}><Trash2 size={16} /></button>
                 </div>
               </div>
-            )
-          })}
+            </li>
+          ))}
+        </ul>
 
-          {filteredExpenses.length === 0 && (
-            <div className="text-center py-16 border border-dashed border-obsidian-700 rounded-2xl bg-obsidian-900/30">
-              <Activity size={40} className="mx-auto mb-4 opacity-20 text-gold-500" />
-              <p className="font-serif italic text-platinum-500 text-lg">No entries match your search criteria.</p>
-            </div>
-          )}
-        </div>
+        {visible.length === 0 && (
+          <div className="text-center py-14 border border-dashed border-obsidian-700 rounded-2xl">
+            <Receipt size={36} className="mx-auto mb-3 text-gold-500/40" />
+            {monthEntries.length === 0 ? (
+              <>
+                <p className="text-platinum-300 font-medium">Nothing spent in {monthLabel(year, month)} yet</p>
+                <p className="text-sm text-platinum-500 mt-1 mb-4">Add your first expense, or import a bank statement to catch up fast.</p>
+                <div className="flex justify-center gap-2">
+                  <button className="btn-primary" onClick={() => onAddExpense()}><Plus size={16} /> Add expense</button>
+                  <button className="btn-ghost" onClick={onImport}><Upload size={16} /> Import</button>
+                </div>
+              </>
+            ) : (
+              <p className="text-platinum-400">No matches. Try a different search or category.</p>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

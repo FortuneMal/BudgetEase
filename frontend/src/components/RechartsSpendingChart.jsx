@@ -1,116 +1,64 @@
 import React, { useState } from 'react';
-import { 
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, Legend
-} from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
+import { formatMoney } from '../lib/format';
 
-// Luxury muted palette (Charcoals, Navy, Muted Metallics)
-const COLORS = ['#1C314A', '#2d3748', '#4a5568', '#718096', '#a0aec0', '#e2e8f0', '#d4af37'];
+const COLORS = ['#d4af37', '#10b981', '#6366f1', '#f97316', '#0ea5e9', '#ec4899', '#a3a3a3', '#84cc16', '#eab308', '#14b8a6'];
 
-const RechartsSpendingChart = ({ expenses, categoryBudgets, selectedCurrency }) => {
-  const [chartType, setChartType] = useState('bar'); // 'bar' or 'pie'
-  const categories = ['Groceries', 'Utilities', 'Entertainment', 'Transportation', 'Home', 'Housing & Rent', 'Other'];
-  
-  // Format currency helper
-  const formatCurrency = (amount) => {
-    return new Intl.NumberFormat(navigator.language, {
-      style: 'currency',
-      currency: selectedCurrency,
-    }).format(amount);
-  };
+// Where the money went this month: spent vs budget per category, or share of total.
+const RechartsSpendingChart = ({ byCategory, categories, currency }) => {
+  const [chartType, setChartType] = useState('pie');
 
-  // Aggregate data
-  const data = categories.map(cat => {
-    const totalSpent = expenses.filter(e => e.category === cat).reduce((sum, e) => sum + e.amount, 0);
-    const budget = categoryBudgets[cat] || 0;
-    return {
-      name: cat,
-      Spent: totalSpent,
-      Budget: budget,
-    };
-  }).filter(item => item.Spent > 0 || item.Budget > 0);
+  const data = Object.entries(byCategory)
+    .map(([name, spent]) => ({ name, Spent: spent, Budget: Number(categories.find((c) => c.name === name)?.budget) || 0 }))
+    .sort((a, b) => b.Spent - a.Spent);
 
-  // Custom Tooltip for premium feel
-  const CustomTooltip = ({ active, payload, label }) => {
-    if (active && payload && payload.length) {
-      return (
-        <div className="p-5 rounded-2xl border border-obsidian-600 shadow-2xl backdrop-blur-xl bg-obsidian-900/90 text-white">
-          <p className="font-serif text-lg tracking-wide mb-3">{label || payload[0].name}</p>
-          {payload.map((entry, index) => (
-            <div key={index} className="flex items-center gap-3 text-xs font-bold uppercase tracking-widest text-platinum-300 mb-1">
-              <div className="w-2 h-2 rounded-full shadow-[0_0_5px_rgba(255,255,255,0.2)]" style={{ backgroundColor: entry.color }} />
-              <span className="flex-1">{entry.name}:</span>
-              <span className="text-white font-serif tracking-normal text-sm">{formatCurrency(entry.value)}</span>
-            </div>
-          ))}
-        </div>
-      );
-    }
-    return null;
-  };
-
-  if (data.length === 0) {
-    return (
-      <div className="h-64 flex items-center justify-center rounded-2xl border border-obsidian-700 bg-obsidian-900/40">
-        <p className="text-sm font-serif italic text-platinum-500">Insufficient data for visualization.</p>
+  const tooltip = ({ active, payload, label }) =>
+    active && payload?.length ? (
+      <div className="rounded-xl border border-obsidian-600 bg-obsidian-900/95 px-4 py-3 shadow-xl text-sm">
+        <p className="font-semibold text-white mb-1">{label || payload[0].name}</p>
+        {payload.map((p) => (
+          <p key={p.dataKey} className="text-platinum-300">{p.dataKey}: <span className="text-white tabular-nums">{formatMoney(p.value, currency)}</span></p>
+        ))}
       </div>
-    );
-  }
+    ) : null;
 
   return (
-    <div className="glass-card p-6 sm:p-10 rounded-2xl relative border-gold-gradient h-full flex flex-col">
-      <div className="flex justify-between items-center mb-8 border-b border-obsidian-700/50 pb-4">
-        <h3 className="text-2xl font-serif text-white tracking-wide">Wealth Distribution</h3>
-        <div className="flex rounded-lg p-1 bg-obsidian-900 border border-obsidian-700">
-          <button 
-            onClick={() => setChartType('bar')}
-            className={`px-4 py-1.5 text-[10px] uppercase tracking-widest font-bold rounded-md transition-all ${chartType === 'bar' ? 'bg-obsidian-700 text-platinum-100 shadow-sm' : 'text-platinum-500 hover:text-platinum-300'}`}
-          >
-            Compare
-          </button>
-          <button 
-            onClick={() => setChartType('pie')}
-            className={`px-4 py-1.5 text-[10px] uppercase tracking-widest font-bold rounded-md transition-all ${chartType === 'pie' ? 'bg-obsidian-700 text-platinum-100 shadow-sm' : 'text-platinum-500 hover:text-platinum-300'}`}
-          >
-            Breakdown
-          </button>
+    <div className="card">
+      <div className="flex items-center justify-between gap-3 mb-5">
+        <h2 className="card-title">Where it went</h2>
+        <div className="segmented" role="group" aria-label="Chart type">
+          <button aria-pressed={chartType === 'pie'} onClick={() => setChartType('pie')}>Share</button>
+          <button aria-pressed={chartType === 'bar'} onClick={() => setChartType('bar')}>vs budget</button>
         </div>
       </div>
 
-      <div className="flex-1 min-h-[300px] w-full mt-4">
-        <ResponsiveContainer width="100%" height="100%">
-          {chartType === 'bar' ? (
-            <BarChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#2d2d2d" />
-              <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#adb5bd', fontSize: 10, fontFamily: 'Outfit' }} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fill: '#adb5bd', fontSize: 10, fontFamily: 'Outfit' }} tickFormatter={(value) => value > 0 ? value : ''} />
-              <RechartsTooltip content={<CustomTooltip />} cursor={{ fill: '#1a1a1a' }} />
-              <Legend wrapperStyle={{ paddingTop: '20px', fontSize: '12px', fontFamily: 'Outfit', color: '#adb5bd' }} />
-              <Bar dataKey="Budget" fill="#1C314A" radius={[4, 4, 0, 0]} barSize={20} />
-              <Bar dataKey="Spent" fill="#718096" radius={[4, 4, 0, 0]} barSize={20} />
-            </BarChart>
-          ) : (
-            <PieChart>
-              <Pie
-                data={data}
-                cx="50%"
-                cy="50%"
-                innerRadius={70}
-                outerRadius={95}
-                paddingAngle={5}
-                dataKey="Spent"
-                stroke="none"
-              >
-                {data.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} className="hover:opacity-80 transition-opacity outline-none cursor-pointer drop-shadow-md" />
-                ))}
-              </Pie>
-              <RechartsTooltip content={<CustomTooltip />} />
-              <Legend wrapperStyle={{ paddingTop: '20px', fontSize: '12px', fontFamily: 'Outfit', color: '#adb5bd' }} />
-            </PieChart>
-          )}
-        </ResponsiveContainer>
-      </div>
+      {data.length === 0 ? (
+        <p className="text-platinum-500 py-10 text-center">Add some spending to see the breakdown.</p>
+      ) : (
+        <div className="h-72">
+          <ResponsiveContainer width="100%" height="100%">
+            {chartType === 'bar' ? (
+              <BarChart data={data} margin={{ left: -10 }}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="rgba(148,163,184,0.2)" />
+                <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: 11 }} interval={0} angle={-25} textAnchor="end" height={60} />
+                <YAxis axisLine={false} tickLine={false} tick={{ fill: '#9ca3af', fontSize: 12 }} tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} />
+                <Tooltip content={tooltip} cursor={{ fill: 'rgba(212,175,55,0.06)' }} />
+                <Legend wrapperStyle={{ fontSize: 13 }} />
+                <Bar dataKey="Budget" fill="#64748b" radius={[4, 4, 0, 0]} maxBarSize={20} />
+                <Bar dataKey="Spent" fill="#d4af37" radius={[4, 4, 0, 0]} maxBarSize={20} />
+              </BarChart>
+            ) : (
+              <PieChart>
+                <Pie data={data} dataKey="Spent" nameKey="name" innerRadius={60} outerRadius={95} paddingAngle={3} stroke="none">
+                  {data.map((d, i) => <Cell key={d.name} fill={COLORS[i % COLORS.length]} />)}
+                </Pie>
+                <Tooltip content={tooltip} />
+                <Legend wrapperStyle={{ fontSize: 13 }} />
+              </PieChart>
+            )}
+          </ResponsiveContainer>
+        </div>
+      )}
     </div>
   );
 };

@@ -96,6 +96,68 @@
     pointer-events: none;
   }
 
+  /* ---------- Readable form + button primitives ---------- */
+  .label {
+    @apply block text-sm font-medium text-platinum-300 mb-1.5;
+  }
+  .hint {
+    @apply text-sm text-platinum-500 mt-1.5;
+  }
+  .input {
+    @apply w-full rounded-xl px-4 py-3 text-base bg-obsidian-900/60 border border-obsidian-600 text-white placeholder-obsidian-500 focus:outline-none focus:border-gold-500 focus:ring-2 focus:ring-gold-500/20 transition-colors disabled:opacity-50;
+  }
+  select.input {
+    @apply appearance-none cursor-pointer pr-10;
+    /* gold chevron drawn with gradients (no data URI) */
+    background-image: linear-gradient(45deg, transparent 50%, #d4af37 50%), linear-gradient(135deg, #d4af37 50%, transparent 50%);
+    background-position: calc(100% - 1.15rem) 52%, calc(100% - 0.8rem) 52%;
+    background-size: 0.35rem 0.35rem, 0.35rem 0.35rem;
+    background-repeat: no-repeat;
+  }
+  select.input option {
+    @apply bg-obsidian-900 text-platinum-200;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-gold-gradient px-5 py-3 text-sm font-semibold text-[#0a0a0a] shadow-[0_8px_20px_rgba(212,175,55,0.18)] transition hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-gold-500/60 px-5 py-3 text-sm font-semibold text-gold-500 transition hover:bg-gold-500/10 disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-obsidian-600 px-5 py-3 text-sm font-semibold text-platinum-300 transition hover:bg-obsidian-700 hover:text-white disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-red-500/90 px-5 py-3 text-sm font-semibold text-white transition hover:bg-red-500 disabled:opacity-40;
+  }
+  .icon-btn {
+    @apply p-2 rounded-lg text-platinum-400 transition-colors hover:bg-obsidian-700 hover:text-gold-400;
+  }
+  .card {
+    @apply glass-card rounded-2xl p-5 sm:p-8;
+  }
+  .card-title {
+    @apply text-xl sm:text-2xl font-serif text-white;
+  }
+  .row-item {
+    @apply flex items-center gap-4 p-4 rounded-xl bg-obsidian-900/40 border border-obsidian-700 hover:border-gold-500/30 transition-colors;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-md;
+  }
+  .segmented {
+    @apply inline-flex rounded-xl p-1 bg-obsidian-900 border border-obsidian-700;
+  }
+  .segmented > button {
+    @apply px-3 sm:px-4 py-2 text-sm font-medium rounded-lg text-platinum-400 transition-colors hover:text-platinum-200;
+  }
+  .segmented > button[aria-pressed='true'] {
+    @apply bg-obsidian-700 text-white;
+  }
+
+  @media print {
+    .no-print { display: none !important; }
+  }
+
   /* Custom scrollbar for luxury feel */
   ::-webkit-scrollbar {
     width: 6px;

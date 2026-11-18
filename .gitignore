@@ -30,3 +30,7 @@ out/
 # Backend specific (if any specific logs/uploads)
 uploads/
 
+
+# Python
+__pycache__/
+*.py[cod]
