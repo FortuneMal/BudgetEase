@@ -69,15 +69,36 @@
     ```
 
 3.  **Environment Configuration:**
-    Create a `.env` file in the root directory:
+
+    `frontend/.env`
 
     ```env
     VITE_SUPABASE_URL=your_project_url
-    VITE_SUPABASE_ANON_KEY=your_anon_key
-    VITE_BACKEND_URL=https://your-api-link.com
+    VITE_SUPABASE_PUBLISHABLE_DEFAULT_KEY=your_publishable_key
+    VITE_BACKEND_URL=http://localhost:5000
     ```
 
-4.  **Launch Development Environment:**
+    `backend/.env`
+
+    ```env
+    SUPABASE_URL=your_project_url
+    SUPABASE_ANON_KEY=your_publishable_key
+    AI_SERVICE_URL=http://localhost:8000
+    ```
+
+    `ai_service/.env`
+
+    ```env
+    GROQ_API_KEY=your_groq_key
+    OPENAI_API_KEY=your_openai_key
+    ```
+
+    AI keys live only in the AI service. Never put them in `frontend/.env`: anything prefixed `VITE_` ships to the browser.
+
+4.  **Database:** run every file in `supabase/migrations/` in order in the Supabase SQL editor. It creates the
+    income, categories, goals and goal contribution tables, row-level security, and a private `receipts` bucket.
+
+5.  **Launch Development Environment:**
 
     ```bash
     npm run dev
